@@ -1,4 +1,20 @@
 #![feature(result_option_inspect)]
+#![feature(lint_reasons)]
+#![warn(clippy::pedantic)]
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "Casting used freely, too much clutter otherwise"
+)]
+#![warn(clippy::nursery)]
+#![allow(clippy::suboptimal_flops, reason = "Less readable")]
+#![warn(
+    clippy::panic,
+    clippy::shadow_unrelated,
+    clippy::todo,
+    clippy::unimplemented
+)]
 
 use druid::piet::{FontFamily, Text, TextLayout, TextLayoutBuilder};
 use druid::widget::prelude::*;
@@ -57,8 +73,8 @@ impl IndexMut<GridPos> for Grid {
 }
 
 impl Grid {
-    fn new(height: usize, width: usize, fraction: f64) -> Grid {
-        let mut grid = Grid {
+    fn new(height: usize, width: usize, fraction: f64) -> Self {
+        let mut grid = Self {
             storage: Arc::new(vec![CellState::ExplodedSafe; height * width]),
             height,
             width,
@@ -72,10 +88,10 @@ impl Grid {
         let below = self.below(pos);
         let left = self.left(pos);
         let right = self.right(pos);
-        let above_left = above.and_then(|pos| self.left(pos));
-        let above_right = above.and_then(|pos| self.right(pos));
-        let below_left = below.and_then(|pos| self.left(pos));
-        let below_right = below.and_then(|pos| self.right(pos));
+        let above_left = above.and_then(|apos| self.left(apos));
+        let above_right = above.and_then(|apos| self.right(apos));
+        let below_left = below.and_then(|bpos| self.left(bpos));
+        let below_right = below.and_then(|bpos| self.right(bpos));
         [
             above,
             below,
@@ -91,9 +107,9 @@ impl Grid {
     fn n_bombs(&self, pos: GridPos) -> usize {
         self.neighbors(pos)
             .iter()
-            .filter(|pos| {
-                pos.map_or(false, |pos| {
-                    matches!(self[pos], CellState::SecretBomb | CellState::ExplodedBomb)
+            .filter(|m_neigh| {
+                m_neigh.map_or(false, |neighbor| {
+                    matches!(self[neighbor], CellState::SecretBomb | CellState::ExplodedBomb)
                 })
             })
             .count()
@@ -195,45 +211,35 @@ impl Grid {
         let exploded = self.open(pos);
         assert!(!exploded);
     }
+    #[allow(
+        clippy::unused_self,
+        reason = "For parallelism with below and right, takes self argument."
+    )]
     fn above(&self, pos: GridPos) -> Option<GridPos> {
-        if pos.row == 0 {
-            None
-        } else {
-            Some(GridPos {
-                row: pos.row - 1,
-                col: pos.col,
-            })
-        }
+        pos.row
+            .checked_sub(1)
+            .map(|row| GridPos { row, col: pos.col })
     }
     fn below(&self, pos: GridPos) -> Option<GridPos> {
-        if pos.row >= self.height - 1 {
-            None
-        } else {
-            Some(GridPos {
-                row: pos.row + 1,
-                col: pos.col,
-            })
-        }
+        (pos.row < self.height - 1).then_some(GridPos {
+            row: pos.row + 1,
+            col: pos.col,
+        })
     }
+    #[allow(
+        clippy::unused_self,
+        reason = "For parallelism with below and right, takes self argument."
+    )]
     fn left(&self, pos: GridPos) -> Option<GridPos> {
-        if pos.col == 0 {
-            None
-        } else {
-            Some(GridPos {
-                row: pos.row,
-                col: pos.col - 1,
-            })
-        }
+        pos.col
+            .checked_sub(1)
+            .map(|col| GridPos { row: pos.row, col })
     }
     fn right(&self, pos: GridPos) -> Option<GridPos> {
-        if pos.col >= self.width - 1 {
-            None
-        } else {
-            Some(GridPos {
-                row: pos.row,
-                col: pos.col + 1,
-            })
-        }
+        (pos.col < self.width - 1).then_some(GridPos {
+            row: pos.row,
+            col: pos.col + 1,
+        })
     }
 }
 
@@ -367,17 +373,17 @@ impl Widget<AppData> for CleansweeperWidget {
                 // Number of unflagged neighbors written on top of white fill,
                 // in varying colors. If none, no number.
                 let rect = Rect::from_origin_size(point, draw_size);
-                let color = match cell_state {
+                let fill_color = match cell_state {
                     CellState::SecretSafe | CellState::SecretBomb => Color::GRAY,
                     CellState::Flagged => Color::FUCHSIA,
                     CellState::Opened => Color::WHITE,
                     CellState::ExplodedSafe | CellState::ExplodedBomb => Color::RED,
                 };
-                ctx.fill(rect, &color);
+                ctx.fill(rect, &fill_color);
                 if cell_state == CellState::Opened {
                     let n_bombs = data.grid.n_bombs(pos);
                     if n_bombs > 0 {
-                        let color = match n_bombs {
+                        let text_color = match n_bombs {
                             1 => Color::BLUE,
                             2 => Color::GREEN,
                             3 => Color::MAROON,
@@ -392,7 +398,7 @@ impl Widget<AppData> for CleansweeperWidget {
                             .text()
                             .new_text_layout(format!("{n_bombs}"))
                             .font(FontFamily::MONOSPACE, font_size)
-                            .text_color(color)
+                            .text_color(text_color)
                             .build()
                             .expect("Text failed");
                         let text_size = text_layout.size();
