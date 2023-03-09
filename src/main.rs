@@ -11,12 +11,10 @@ use std::sync::Arc;
 use clap::Parser;
 use rand::prelude::*;
 
-//const GRID_HEIGHT: usize = 16;
-//const GRID_WIDTH: usize = 30;
-//const POOL_SIZE: usize = GRID_HEIGHT * GRID_WIDTH;
-//const BOMB_PROB: f64 = 0.25;
 const NUM_FONT_SIZE: f64 = 36.0;
-const VERT_SPACING: f64 = 5.0;
+const SHRINK_CELL_SIZE: f64 = 40.0;
+const SPACING: f64 = 5.0;
+const MAX_ASPECT: f64 = 1.15;
 
 const BACKGROUND: Color = Color::grey8(23);
 
@@ -253,11 +251,9 @@ struct AppData {
 
 struct CleansweeperWidget {
     cell_size: Size,
-    width: usize,
-    height: usize,
 }
 impl CleansweeperWidget {
-    fn grid_pos(&self, p: Point) -> Option<GridPos> {
+    fn grid_pos(&self, p: Point, grid_height: usize, grid_width: usize) -> Option<GridPos> {
         let w0 = self.cell_size.width;
         let h0 = self.cell_size.height;
         if p.x < 0.0 || p.y < 0.0 || w0 == 0.0 || h0 == 0.0 {
@@ -265,7 +261,7 @@ impl CleansweeperWidget {
         }
         let row = (p.y / h0) as usize;
         let col = (p.x / w0) as usize;
-        if row >= self.height || col >= self.width {
+        if row >= grid_height || col >= grid_width {
             return None;
         }
         Some(GridPos { row, col })
@@ -280,7 +276,8 @@ impl Widget<AppData> for CleansweeperWidget {
                 if data.game_over == GameOver::Ongoing {
                     match e.button {
                         MouseButton::Left => {
-                            let grid_pos_opt = self.grid_pos(e.pos);
+                            let grid_pos_opt =
+                                self.grid_pos(e.pos, data.grid.height, data.grid.width);
                             grid_pos_opt.inspect(|pos| {
                                 let exploded = data.grid.flag(*pos);
                                 if exploded {
@@ -289,7 +286,8 @@ impl Widget<AppData> for CleansweeperWidget {
                             });
                         }
                         MouseButton::Right => {
-                            let grid_pos_opt = self.grid_pos(e.pos);
+                            let grid_pos_opt =
+                                self.grid_pos(e.pos, data.grid.height, data.grid.width);
                             grid_pos_opt.inspect(|pos| {
                                 let exploded = data.grid.open(*pos);
                                 if exploded {
@@ -324,15 +322,25 @@ impl Widget<AppData> for CleansweeperWidget {
         &mut self,
         _layout_ctx: &mut LayoutCtx,
         bc: &BoxConstraints,
-        _data: &AppData,
+        data: &AppData,
         _env: &Env,
     ) -> Size {
-        bc.max()
+        let Size {
+            height: max_height,
+            width: max_width,
+        } = bc.max();
+        let ideal_ratio = data.grid.height as f64 / data.grid.width as f64;
+        let height_cap = max_width * ideal_ratio * MAX_ASPECT;
+        let width_cap = (max_height / ideal_ratio) * MAX_ASPECT;
+        Size {
+            height: max_height.min(height_cap),
+            width: max_width.min(width_cap),
+        }
     }
     fn paint(&mut self, ctx: &mut PaintCtx, data: &AppData, _env: &Env) {
         let size: Size = ctx.size();
-        let w0 = size.width / self.width as f64;
-        let h0 = size.height / self.height as f64;
+        let w0 = size.width / data.grid.width as f64;
+        let h0 = size.height / data.grid.height as f64;
         let cell_size = Size {
             width: w0,
             height: h0,
@@ -342,8 +350,10 @@ impl Widget<AppData> for CleansweeperWidget {
             width: w0 - 2.0,
             height: h0 - 2.0,
         };
-        for row in 0..self.height {
-            for col in 0..self.width {
+        let font_scale_down = ((w0.min(h0)) / SHRINK_CELL_SIZE).min(1.0);
+        let font_size = NUM_FONT_SIZE * font_scale_down;
+        for row in 0..data.grid.height {
+            for col in 0..data.grid.width {
                 let pos = GridPos { row, col };
                 let cell_state = data.grid[pos];
                 let point = Point {
@@ -378,10 +388,10 @@ impl Widget<AppData> for CleansweeperWidget {
                             8 => Color::LIME,
                             _ => unreachable!(),
                         };
-                        let text = ctx.text();
-                        let text_layout = text
+                        let text_layout = ctx
+                            .text()
                             .new_text_layout(format!("{n_bombs}"))
-                            .font(FontFamily::MONOSPACE, NUM_FONT_SIZE)
+                            .font(FontFamily::MONOSPACE, font_size)
                             .text_color(color)
                             .build()
                             .expect("Text failed");
@@ -398,36 +408,38 @@ impl Widget<AppData> for CleansweeperWidget {
     }
 }
 
-fn make_widget(height: usize, width: usize) -> impl Widget<AppData> {
+fn make_widget() -> impl Widget<AppData> {
     let cleansweeper = CleansweeperWidget {
         cell_size: Size {
             width: 0.0,
             height: 0.0,
         },
-        height,
-        width,
     };
     let restart_button = Label::new("Restart")
         .with_text_size(NUM_FONT_SIZE)
         .on_click(move |_ctx, data: &mut AppData, _env| {
             data.game_over = GameOver::Ongoing;
             data.grid.start();
-        }).center().expand_width();
+        })
+        .center()
+        .expand_width();
     let game_over_text = Label::new(|data: &AppData, _env: &_| match data.game_over {
         GameOver::Loss => "Try again?",
         GameOver::Win => "You win!",
         GameOver::Ongoing => "Good luck!",
     })
-    .with_text_size(NUM_FONT_SIZE).center().expand_width();
+    .with_text_size(NUM_FONT_SIZE)
+    .center()
+    .expand_width();
     let bottom_row = Flex::row()
         .with_flex_child(restart_button, 1.0)
-        .with_spacer(VERT_SPACING)
+        .with_spacer(SPACING)
         .with_flex_child(game_over_text, 1.0);
     Flex::column()
         .with_flex_child(cleansweeper, 1.0)
-        .with_spacer(VERT_SPACING)
+        .with_spacer(SPACING)
         .with_child(bottom_row)
-        .with_spacer(VERT_SPACING)
+        .with_spacer(SPACING)
         .background(BACKGROUND)
 }
 
@@ -449,7 +461,7 @@ struct Args {
 
 /*
 TODO:
-- Keep cells somewhat close to square, in update method
+- Change board characteristics on restart
 */
 fn main() {
     let args = Args::parse();
@@ -458,7 +470,7 @@ fn main() {
     let fraction = args.fraction.unwrap_or(0.25);
     assert!(fraction <= 1.0);
     assert!(fraction >= 0.0);
-    let window = WindowDesc::new(make_widget(height, width))
+    let window = WindowDesc::new(make_widget())
         .window_size(Size {
             width: 800.,
             height: 800.,
