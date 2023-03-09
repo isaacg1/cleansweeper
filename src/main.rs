@@ -4,15 +4,17 @@ use druid::piet::{FontFamily, Text, TextLayout, TextLayoutBuilder};
 use druid::widget::prelude::*;
 use druid::widget::{Flex, Label};
 use druid::{AppLauncher, Color, Data, MouseButton, Point, Rect, Size, WidgetExt, WindowDesc};
+
 use std::ops::{Index, IndexMut};
 use std::sync::Arc;
 
+use clap::Parser;
 use rand::prelude::*;
 
-const GRID_HEIGHT: usize = 16;
-const GRID_WIDTH: usize = 30;
-const POOL_SIZE: usize = GRID_HEIGHT * GRID_WIDTH;
-const BOMB_PROB: f64 = 0.25;
+//const GRID_HEIGHT: usize = 16;
+//const GRID_WIDTH: usize = 30;
+//const POOL_SIZE: usize = GRID_HEIGHT * GRID_WIDTH;
+//const BOMB_PROB: f64 = 0.25;
 const NUM_FONT_SIZE: f64 = 36.0;
 const VERT_SPACING: f64 = 5.0;
 
@@ -31,6 +33,9 @@ enum CellState {
 #[derive(Clone, Data, PartialEq)]
 struct Grid {
     storage: Arc<Vec<CellState>>,
+    height: usize,
+    width: usize,
+    fraction: f64,
 }
 #[derive(Clone, Copy)]
 struct GridPos {
@@ -41,35 +46,38 @@ struct GridPos {
 impl Index<GridPos> for Grid {
     type Output = CellState;
     fn index(&self, pos: GridPos) -> &Self::Output {
-        let idx = pos.row * GRID_WIDTH + pos.col;
+        let idx = pos.row * self.width + pos.col;
         &self.storage[idx]
     }
 }
 
 impl IndexMut<GridPos> for Grid {
     fn index_mut(&mut self, pos: GridPos) -> &mut Self::Output {
-        let idx = pos.row * GRID_WIDTH + pos.col;
+        let idx = pos.row * self.width + pos.col;
         Arc::make_mut(&mut self.storage).index_mut(idx)
     }
 }
 
 impl Grid {
-    fn new() -> Grid {
+    fn new(height: usize, width: usize, fraction: f64) -> Grid {
         let mut grid = Grid {
-            storage: Arc::new(vec![CellState::ExplodedSafe; POOL_SIZE]),
+            storage: Arc::new(vec![CellState::ExplodedSafe; height * width]),
+            height,
+            width,
+            fraction,
         };
         grid.start();
         grid
     }
-    fn neighbors(pos: GridPos) -> [Option<GridPos>; 8] {
-        let above = pos.above();
-        let below = pos.below();
-        let left = pos.left();
-        let right = pos.right();
-        let above_left = above.and_then(GridPos::left);
-        let above_right = above.and_then(GridPos::right);
-        let below_left = below.and_then(GridPos::left);
-        let below_right = below.and_then(GridPos::right);
+    fn neighbors(&self, pos: GridPos) -> [Option<GridPos>; 8] {
+        let above = self.above(pos);
+        let below = self.below(pos);
+        let left = self.left(pos);
+        let right = self.right(pos);
+        let above_left = above.and_then(|pos| self.left(pos));
+        let above_right = above.and_then(|pos| self.right(pos));
+        let below_left = below.and_then(|pos| self.left(pos));
+        let below_right = below.and_then(|pos| self.right(pos));
         [
             above,
             below,
@@ -83,7 +91,7 @@ impl Grid {
     }
     // Number of neighboring unflagged bombs
     fn n_bombs(&self, pos: GridPos) -> usize {
-        Grid::neighbors(pos)
+        self.neighbors(pos)
             .iter()
             .filter(|pos| {
                 pos.map_or(false, |pos| {
@@ -96,7 +104,8 @@ impl Grid {
     fn flood(&mut self, pos: GridPos) {
         let mut to_flood = match self[pos] {
             CellState::Opened => vec![pos],
-            CellState::Flagged => Grid::neighbors(pos)
+            CellState::Flagged => self
+                .neighbors(pos)
                 .iter()
                 .filter_map(|p| *p)
                 .filter(|p| self[*p] == CellState::Opened)
@@ -106,7 +115,7 @@ impl Grid {
         while let Some(center) = to_flood.pop() {
             assert_eq!(self[center], CellState::Opened);
             if self.n_bombs(center) == 0 {
-                for neighbor in Grid::neighbors(center).into_iter().flatten() {
+                for neighbor in self.neighbors(center).into_iter().flatten() {
                     match self[neighbor] {
                         CellState::SecretSafe => {
                             self[neighbor] = CellState::Opened;
@@ -120,6 +129,11 @@ impl Grid {
                 }
             }
         }
+    }
+    fn is_win(&self) -> bool {
+        (0..self.height)
+            .flat_map(|row| (0..self.width).map(move |col| GridPos { row, col }))
+            .all(|pos| matches!(self[pos], CellState::Opened | CellState::Flagged))
     }
     // Flag, return if exploded
     fn flag(&mut self, pos: GridPos) -> bool {
@@ -155,10 +169,10 @@ impl Grid {
     fn start(&mut self) {
         // Allow seeding?
         let mut rng = thread_rng();
-        for row in 0..GRID_HEIGHT {
-            for col in 0..GRID_WIDTH {
+        for row in 0..self.height {
+            for col in 0..self.width {
                 let pos = GridPos { row, col };
-                let cell_state = if rng.gen::<f64>() < BOMB_PROB {
+                let cell_state = if rng.gen::<f64>() < self.fraction {
                     CellState::SecretBomb
                 } else {
                     CellState::SecretSafe
@@ -167,8 +181,8 @@ impl Grid {
             }
         }
         let mut zero_positions = vec![];
-        for row in 0..GRID_HEIGHT {
-            for col in 0..GRID_WIDTH {
+        for row in 0..self.height {
+            for col in 0..self.width {
                 let pos = GridPos { row, col };
                 let n_bombs = self.n_bombs(pos);
                 if self[pos] == CellState::SecretSafe && n_bombs == 0 {
@@ -183,58 +197,64 @@ impl Grid {
         let exploded = self.open(pos);
         assert!(!exploded);
     }
+    fn above(&self, pos: GridPos) -> Option<GridPos> {
+        if pos.row == 0 {
+            None
+        } else {
+            Some(GridPos {
+                row: pos.row - 1,
+                col: pos.col,
+            })
+        }
+    }
+    fn below(&self, pos: GridPos) -> Option<GridPos> {
+        if pos.row >= self.height - 1 {
+            None
+        } else {
+            Some(GridPos {
+                row: pos.row + 1,
+                col: pos.col,
+            })
+        }
+    }
+    fn left(&self, pos: GridPos) -> Option<GridPos> {
+        if pos.col == 0 {
+            None
+        } else {
+            Some(GridPos {
+                row: pos.row,
+                col: pos.col - 1,
+            })
+        }
+    }
+    fn right(&self, pos: GridPos) -> Option<GridPos> {
+        if pos.col >= self.width - 1 {
+            None
+        } else {
+            Some(GridPos {
+                row: pos.row,
+                col: pos.col + 1,
+            })
+        }
+    }
 }
 
-impl GridPos {
-    fn above(self) -> Option<GridPos> {
-        if self.row == 0 {
-            None
-        } else {
-            Some(GridPos {
-                row: self.row - 1,
-                col: self.col,
-            })
-        }
-    }
-    fn below(self) -> Option<GridPos> {
-        if self.row >= GRID_HEIGHT - 1 {
-            None
-        } else {
-            Some(GridPos {
-                row: self.row + 1,
-                col: self.col,
-            })
-        }
-    }
-    fn left(self) -> Option<GridPos> {
-        if self.col == 0 {
-            None
-        } else {
-            Some(GridPos {
-                row: self.row,
-                col: self.col - 1,
-            })
-        }
-    }
-    fn right(self) -> Option<GridPos> {
-        if self.col >= GRID_WIDTH - 1 {
-            None
-        } else {
-            Some(GridPos {
-                row: self.row,
-                col: self.col + 1,
-            })
-        }
-    }
+#[derive(Clone, Copy, PartialEq, Data)]
+enum GameOver {
+    Loss,
+    Win,
+    Ongoing,
 }
 #[derive(Clone, Data)]
 struct AppData {
     grid: Grid,
-    game_over: bool,
+    game_over: GameOver,
 }
 
 struct CleansweeperWidget {
     cell_size: Size,
+    width: usize,
+    height: usize,
 }
 impl CleansweeperWidget {
     fn grid_pos(&self, p: Point) -> Option<GridPos> {
@@ -245,7 +265,7 @@ impl CleansweeperWidget {
         }
         let row = (p.y / h0) as usize;
         let col = (p.x / w0) as usize;
-        if row >= GRID_HEIGHT || col >= GRID_WIDTH {
+        if row >= self.height || col >= self.width {
             return None;
         }
         Some(GridPos { row, col })
@@ -257,14 +277,14 @@ impl Widget<AppData> for CleansweeperWidget {
         match event {
             Event::WindowConnected => ctx.request_paint(),
             Event::MouseDown(e) => {
-                if !data.game_over {
+                if data.game_over == GameOver::Ongoing {
                     match e.button {
                         MouseButton::Left => {
                             let grid_pos_opt = self.grid_pos(e.pos);
                             grid_pos_opt.inspect(|pos| {
                                 let exploded = data.grid.flag(*pos);
                                 if exploded {
-                                    data.game_over = true;
+                                    data.game_over = GameOver::Loss;
                                 }
                             });
                         }
@@ -273,11 +293,14 @@ impl Widget<AppData> for CleansweeperWidget {
                             grid_pos_opt.inspect(|pos| {
                                 let exploded = data.grid.open(*pos);
                                 if exploded {
-                                    data.game_over = true;
+                                    data.game_over = GameOver::Loss;
                                 }
                             });
                         }
                         _ => (),
+                    }
+                    if data.grid.is_win() {
+                        data.game_over = GameOver::Win;
                     }
                 }
             }
@@ -308,8 +331,8 @@ impl Widget<AppData> for CleansweeperWidget {
     }
     fn paint(&mut self, ctx: &mut PaintCtx, data: &AppData, _env: &Env) {
         let size: Size = ctx.size();
-        let w0 = size.width / GRID_WIDTH as f64;
-        let h0 = size.height / GRID_HEIGHT as f64;
+        let w0 = size.width / self.width as f64;
+        let h0 = size.height / self.height as f64;
         let cell_size = Size {
             width: w0,
             height: h0,
@@ -319,8 +342,8 @@ impl Widget<AppData> for CleansweeperWidget {
             width: w0 - 2.0,
             height: h0 - 2.0,
         };
-        for row in 0..GRID_HEIGHT {
-            for col in 0..GRID_WIDTH {
+        for row in 0..self.height {
+            for col in 0..self.width {
                 let pos = GridPos { row, col };
                 let cell_state = data.grid[pos];
                 let point = Point {
@@ -375,47 +398,80 @@ impl Widget<AppData> for CleansweeperWidget {
     }
 }
 
-fn make_widget() -> impl Widget<AppData> {
+fn make_widget(height: usize, width: usize) -> impl Widget<AppData> {
     let cleansweeper = CleansweeperWidget {
         cell_size: Size {
             width: 0.0,
             height: 0.0,
         },
+        height,
+        width,
     };
     let restart_button = Label::new("Restart")
         .with_text_size(NUM_FONT_SIZE)
         .on_click(move |_ctx, data: &mut AppData, _env| {
-            data.game_over = false;
+            data.game_over = GameOver::Ongoing;
             data.grid.start();
-        });
+        }).center().expand_width();
+    let game_over_text = Label::new(|data: &AppData, _env: &_| match data.game_over {
+        GameOver::Loss => "Try again?",
+        GameOver::Win => "You win!",
+        GameOver::Ongoing => "Good luck!",
+    })
+    .with_text_size(NUM_FONT_SIZE).center().expand_width();
+    let bottom_row = Flex::row()
+        .with_flex_child(restart_button, 1.0)
+        .with_spacer(VERT_SPACING)
+        .with_flex_child(game_over_text, 1.0);
     Flex::column()
         .with_flex_child(cleansweeper, 1.0)
         .with_spacer(VERT_SPACING)
-        .with_child(restart_button)
+        .with_child(bottom_row)
         .with_spacer(VERT_SPACING)
         .background(BACKGROUND)
 }
 
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Height of Cleansweeper grid - default 16
+    #[arg(short, long)]
+    height: Option<usize>,
+
+    /// Width of Cleansweeper grid - default 16
+    #[arg(short, long)]
+    width: Option<usize>,
+
+    /// Fraction of cells which contain bombs - default 0.25
+    #[arg(short, long)]
+    fraction: Option<f64>,
+}
+
 /*
 TODO:
-- Make width and height separate
-- Add "You win!/Try again?"
+- Keep cells somewhat close to square, in update method
 */
 fn main() {
-    let window = WindowDesc::new(make_widget())
+    let args = Args::parse();
+    let height = args.height.unwrap_or(16);
+    let width = args.width.unwrap_or(16);
+    let fraction = args.fraction.unwrap_or(0.25);
+    assert!(fraction <= 1.0);
+    assert!(fraction >= 0.0);
+    let window = WindowDesc::new(make_widget(height, width))
         .window_size(Size {
             width: 800.,
             height: 800.,
         })
         .title("Cleansweeper");
-    let mut grid = Grid::new();
+    let mut grid = Grid::new(height, width, fraction);
     grid.start();
 
     AppLauncher::with_window(window)
         .log_to_console()
         .launch(AppData {
             grid,
-            game_over: false,
+            game_over: GameOver::Ongoing,
         })
         .expect("launch failed");
 }
