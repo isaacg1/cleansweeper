@@ -32,6 +32,7 @@ const SHRINK_CELL_SIZE: f64 = 40.0;
 const SPACING: f64 = 5.0;
 const MAX_ASPECT: f64 = 1.15;
 
+const PINK: Color = Color::rgb8(0xff, 0xb7, 0xc5);
 const BACKGROUND: Color = Color::grey8(23);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -68,6 +69,7 @@ impl Index<GridPos> for Grid {
 impl IndexMut<GridPos> for Grid {
     fn index_mut(&mut self, pos: GridPos) -> &mut Self::Output {
         let idx = pos.row * self.width + pos.col;
+        // Arc is just for cheaper comparisons
         Arc::make_mut(&mut self.storage).index_mut(idx)
     }
 }
@@ -82,6 +84,9 @@ impl Grid {
         };
         grid.start();
         grid
+    }
+    fn iter_pos<'a>(&'a self) -> impl Iterator<Item = GridPos> + 'a {
+        (0..self.height).flat_map(|row| (0..self.width).map(move |col| GridPos { row, col }))
     }
     fn neighbors(&self, pos: GridPos) -> [Option<GridPos>; 8] {
         let above = self.above(pos);
@@ -109,7 +114,10 @@ impl Grid {
             .iter()
             .filter(|m_neigh| {
                 m_neigh.map_or(false, |neighbor| {
-                    matches!(self[neighbor], CellState::SecretBomb | CellState::ExplodedBomb)
+                    matches!(
+                        self[neighbor],
+                        CellState::SecretBomb | CellState::ExplodedBomb
+                    )
                 })
             })
             .count()
@@ -145,8 +153,7 @@ impl Grid {
         }
     }
     fn is_win(&self) -> bool {
-        (0..self.height)
-            .flat_map(|row| (0..self.width).map(move |col| GridPos { row, col }))
+        self.iter_pos()
             .all(|pos| matches!(self[pos], CellState::Opened | CellState::Flagged))
     }
     // Flag, return if exploded
@@ -194,16 +201,9 @@ impl Grid {
                 self[pos] = cell_state;
             }
         }
-        let mut zero_positions = vec![];
-        for row in 0..self.height {
-            for col in 0..self.width {
-                let pos = GridPos { row, col };
-                let n_bombs = self.n_bombs(pos);
-                if self[pos] == CellState::SecretSafe && n_bombs == 0 {
-                    zero_positions.push(pos);
-                }
-            }
-        }
+        let zero_positions: Vec<GridPos> = self.iter_pos()
+            .filter(|&pos| self[pos] == CellState::SecretSafe && self.n_bombs(pos) == 0)
+            .collect();
         // Zero_positions could be empty, but it's super rare, so I'd rather just crash.
         assert!(!zero_positions.is_empty());
         let index = rng.gen_range(0..zero_positions.len());
@@ -375,7 +375,7 @@ impl Widget<AppData> for CleansweeperWidget {
                 let rect = Rect::from_origin_size(point, draw_size);
                 let fill_color = match cell_state {
                     CellState::SecretSafe | CellState::SecretBomb => Color::GRAY,
-                    CellState::Flagged => Color::FUCHSIA,
+                    CellState::Flagged => PINK,
                     CellState::Opened => Color::WHITE,
                     CellState::ExplodedSafe | CellState::ExplodedBomb => Color::RED,
                 };
