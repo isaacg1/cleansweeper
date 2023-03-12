@@ -51,6 +51,7 @@ struct Grid {
     height: usize,
     width: usize,
     fraction: f64,
+    torus: bool,
 }
 #[derive(Clone, Copy)]
 struct GridPos {
@@ -75,12 +76,13 @@ impl IndexMut<GridPos> for Grid {
 }
 
 impl Grid {
-    fn new(height: usize, width: usize, fraction: f64) -> Self {
+    fn new(height: usize, width: usize, fraction: f64, torus: bool) -> Self {
         let mut grid = Self {
             storage: Arc::new(vec![CellState::ExplodedSafe; height * width]),
             height,
             width,
             fraction,
+            torus,
         };
         grid.start();
         grid
@@ -201,7 +203,8 @@ impl Grid {
                 self[pos] = cell_state;
             }
         }
-        let zero_positions: Vec<GridPos> = self.iter_pos()
+        let zero_positions: Vec<GridPos> = self
+            .iter_pos()
             .filter(|&pos| self[pos] == CellState::SecretSafe && self.n_bombs(pos) == 0)
             .collect();
         // Zero_positions could be empty, but it's super rare, so I'd rather just crash.
@@ -219,41 +222,53 @@ impl Grid {
                 let new_state = match self[pos] {
                     CellState::ExplodedBomb => CellState::SecretBomb,
                     CellState::ExplodedSafe => CellState::SecretSafe,
-                    _ => continue
+                    _ => continue,
                 };
                 self[pos] = new_state;
             }
         }
     }
-    #[allow(
-        clippy::unused_self,
-        reason = "For parallelism with below and right, takes self argument."
-    )]
     fn above(&self, pos: GridPos) -> Option<GridPos> {
-        pos.row
-            .checked_sub(1)
-            .map(|row| GridPos { row, col: pos.col })
+        if self.torus {
+            let row = (pos.row + self.height - 1) % self.height;
+            Some(GridPos { row, col: pos.col })
+        } else {
+            pos.row
+                .checked_sub(1)
+                .map(|row| GridPos { row, col: pos.col })
+        }
     }
     fn below(&self, pos: GridPos) -> Option<GridPos> {
-        (pos.row < self.height - 1).then_some(GridPos {
-            row: pos.row + 1,
-            col: pos.col,
-        })
+        if self.torus {
+            let row = (pos.row + 1) % self.height;
+            Some(GridPos { row, col: pos.col })
+        } else {
+            (pos.row < self.height - 1).then_some(GridPos {
+                row: pos.row + 1,
+                col: pos.col,
+            })
+        }
     }
-    #[allow(
-        clippy::unused_self,
-        reason = "For parallelism with below and right, takes self argument."
-    )]
     fn left(&self, pos: GridPos) -> Option<GridPos> {
-        pos.col
-            .checked_sub(1)
-            .map(|col| GridPos { row: pos.row, col })
+        if self.torus {
+            let col = (pos.col + self.width - 1) % self.width;
+            Some(GridPos { row: pos.row, col })
+        } else {
+            pos.col
+                .checked_sub(1)
+                .map(|col| GridPos { row: pos.row, col })
+        }
     }
     fn right(&self, pos: GridPos) -> Option<GridPos> {
-        (pos.col < self.width - 1).then_some(GridPos {
-            row: pos.row,
-            col: pos.col + 1,
-        })
+        if self.torus {
+            let col = (pos.col + 1) % self.width;
+            Some(GridPos { row: pos.row, col })
+        } else {
+            (pos.col < self.width - 1).then_some(GridPos {
+                row: pos.row,
+                col: pos.col + 1,
+            })
+        }
     }
 }
 
@@ -445,7 +460,13 @@ fn make_widget() -> impl Widget<AppData> {
         .center()
         .expand_width();
     let game_over_text = Label::new(|data: &AppData, _env: &_| match data.game_over {
-        GameOver::Loss => if data.easy_mode { "Undo?" } else { "Try again?" },
+        GameOver::Loss => {
+            if data.easy_mode {
+                "Undo?"
+            } else {
+                "Try again?"
+            }
+        }
         GameOver::Win => "You win!",
         GameOver::Ongoing => "Good luck!",
     })
@@ -474,7 +495,7 @@ fn make_widget() -> impl Widget<AppData> {
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Height of Cleansweeper grid - default 16
-    #[arg(short='H', long)]
+    #[arg(short = 'H', long)]
     height: Option<usize>,
 
     /// Width of Cleansweeper grid - default 16
@@ -488,12 +509,18 @@ struct Args {
     /// Easy mode - allows undos
     #[arg(short, long)]
     easy: bool,
+
+    /// Torus mode - top and bottom, left and right connected
+    #[arg(short, long)]
+    torus: bool,
 }
 
 /*
 TODO:
 - Change board characteristics on restart
 - Torus mode
+  - Functionality
+  - Display with overlap - 3 tiles?
 */
 fn main() {
     let args = Args::parse();
@@ -508,7 +535,7 @@ fn main() {
             height: 800.,
         })
         .title("Cleansweeper");
-    let mut grid = Grid::new(height, width, fraction);
+    let mut grid = Grid::new(height, width, fraction, args.torus);
     grid.start();
 
     AppLauncher::with_window(window)
