@@ -31,6 +31,7 @@ const NUM_FONT_SIZE: f64 = 36.0;
 const SHRINK_CELL_SIZE: f64 = 40.0;
 const SPACING: f64 = 5.0;
 const MAX_ASPECT: f64 = 1.15;
+const TORUS_OVERLAP: usize = 3;
 
 const PINK: Color = Color::rgb8(0xff, 0xb7, 0xc5);
 const BACKGROUND: Color = Color::grey8(23);
@@ -87,7 +88,7 @@ impl Grid {
         grid.start();
         grid
     }
-    fn iter_pos<'a>(&'a self) -> impl Iterator<Item = GridPos> + 'a {
+    fn iter_pos(&self) -> impl Iterator<Item = GridPos> + '_ {
         (0..self.height).flat_map(|row| (0..self.width).map(move |col| GridPos { row, col }))
     }
     fn neighbors(&self, pos: GridPos) -> [Option<GridPos>; 8] {
@@ -289,7 +290,13 @@ struct CleansweeperWidget {
     cell_size: Size,
 }
 impl CleansweeperWidget {
-    fn grid_pos(&self, p: Point, grid_height: usize, grid_width: usize) -> Option<GridPos> {
+    fn grid_pos(
+        &self,
+        p: Point,
+        grid_height: usize,
+        grid_width: usize,
+        is_torus: bool,
+    ) -> Option<GridPos> {
         let w0 = self.cell_size.width;
         let h0 = self.cell_size.height;
         if p.x < 0.0 || p.y < 0.0 || w0 == 0.0 || h0 == 0.0 {
@@ -298,9 +305,21 @@ impl CleansweeperWidget {
         let row = (p.y / h0) as usize;
         let col = (p.x / w0) as usize;
         if row >= grid_height || col >= grid_width {
-            return None;
+            if is_torus {
+                if row < grid_height + TORUS_OVERLAP && col < grid_width + TORUS_OVERLAP {
+                    Some(GridPos {
+                        row: row % grid_height,
+                        col: col % grid_width,
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            Some(GridPos { row, col })
         }
-        Some(GridPos { row, col })
     }
 }
 
@@ -312,8 +331,12 @@ impl Widget<AppData> for CleansweeperWidget {
                 if data.game_over == GameOver::Ongoing {
                     match e.button {
                         MouseButton::Left => {
-                            let grid_pos_opt =
-                                self.grid_pos(e.pos, data.grid.height, data.grid.width);
+                            let grid_pos_opt = self.grid_pos(
+                                e.pos,
+                                data.grid.height,
+                                data.grid.width,
+                                data.grid.torus,
+                            );
                             grid_pos_opt.inspect(|pos| {
                                 let exploded = data.grid.flag(*pos);
                                 if exploded {
@@ -322,8 +345,12 @@ impl Widget<AppData> for CleansweeperWidget {
                             });
                         }
                         MouseButton::Right => {
-                            let grid_pos_opt =
-                                self.grid_pos(e.pos, data.grid.height, data.grid.width);
+                            let grid_pos_opt = self.grid_pos(
+                                e.pos,
+                                data.grid.height,
+                                data.grid.width,
+                                data.grid.torus,
+                            );
                             grid_pos_opt.inspect(|pos| {
                                 let exploded = data.grid.open(*pos);
                                 if exploded {
@@ -375,8 +402,10 @@ impl Widget<AppData> for CleansweeperWidget {
     }
     fn paint(&mut self, ctx: &mut PaintCtx, data: &AppData, _env: &Env) {
         let size: Size = ctx.size();
-        let w0 = size.width / data.grid.width as f64;
-        let h0 = size.height / data.grid.height as f64;
+        let visual_width = data.grid.width + if data.grid.torus { TORUS_OVERLAP } else { 0 };
+        let visual_height = data.grid.height + if data.grid.torus { TORUS_OVERLAP } else { 0 };
+        let w0 = size.width / visual_width as f64;
+        let h0 = size.height / visual_height as f64;
         let cell_size = Size {
             width: w0,
             height: h0,
@@ -388,13 +417,16 @@ impl Widget<AppData> for CleansweeperWidget {
         };
         let font_scale_down = ((w0.min(h0)) / SHRINK_CELL_SIZE).min(1.0);
         let font_size = NUM_FONT_SIZE * font_scale_down;
-        for row in 0..data.grid.height {
-            for col in 0..data.grid.width {
-                let pos = GridPos { row, col };
+        for visual_row in 0..visual_height {
+            for visual_col in 0..visual_width {
+                let pos = GridPos {
+                    row: visual_row % data.grid.height,
+                    col: visual_col % data.grid.width,
+                };
                 let cell_state = data.grid[pos];
                 let point = Point {
-                    x: w0 * col as f64 + 1.0,
-                    y: h0 * row as f64 + 1.0,
+                    x: w0 * visual_col as f64 + 1.0,
+                    y: h0 * visual_row as f64 + 1.0,
                 };
                 // Unknown is dark grey fill
                 // Flagged is pink fill
@@ -518,9 +550,6 @@ struct Args {
 /*
 TODO:
 - Change board characteristics on restart
-- Torus mode
-  - Functionality
-  - Display with overlap - 3 tiles?
 */
 fn main() {
     let args = Args::parse();
