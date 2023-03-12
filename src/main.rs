@@ -211,6 +211,20 @@ impl Grid {
         let exploded = self.open(pos);
         assert!(!exploded);
     }
+    // Turn any explosions back into secret
+    fn clear_explosions(&mut self) {
+        for row in 0..self.height {
+            for col in 0..self.width {
+                let pos = GridPos { row, col };
+                let new_state = match self[pos] {
+                    CellState::ExplodedBomb => CellState::SecretBomb,
+                    CellState::ExplodedSafe => CellState::SecretSafe,
+                    _ => continue
+                };
+                self[pos] = new_state;
+            }
+        }
+    }
     #[allow(
         clippy::unused_self,
         reason = "For parallelism with below and right, takes self argument."
@@ -253,6 +267,7 @@ enum GameOver {
 struct AppData {
     grid: Grid,
     game_over: GameOver,
+    easy_mode: bool,
 }
 
 struct CleansweeperWidget {
@@ -430,11 +445,17 @@ fn make_widget() -> impl Widget<AppData> {
         .center()
         .expand_width();
     let game_over_text = Label::new(|data: &AppData, _env: &_| match data.game_over {
-        GameOver::Loss => "Try again?",
+        GameOver::Loss => if data.easy_mode { "Undo?" } else { "Try again?" },
         GameOver::Win => "You win!",
         GameOver::Ongoing => "Good luck!",
     })
     .with_text_size(NUM_FONT_SIZE)
+    .on_click(move |_ctx, data: &mut AppData, _env| {
+        if data.easy_mode {
+            data.game_over = GameOver::Ongoing;
+            data.grid.clear_explosions();
+        }
+    })
     .center()
     .expand_width();
     let bottom_row = Flex::row()
@@ -453,7 +474,7 @@ fn make_widget() -> impl Widget<AppData> {
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Height of Cleansweeper grid - default 16
-    #[arg(short, long)]
+    #[arg(short='H', long)]
     height: Option<usize>,
 
     /// Width of Cleansweeper grid - default 16
@@ -463,11 +484,16 @@ struct Args {
     /// Fraction of cells which contain bombs - default 0.25
     #[arg(short, long)]
     fraction: Option<f64>,
+
+    /// Easy mode - allows undos
+    #[arg(short, long)]
+    easy: bool,
 }
 
 /*
 TODO:
 - Change board characteristics on restart
+- Torus mode
 */
 fn main() {
     let args = Args::parse();
@@ -490,6 +516,7 @@ fn main() {
         .launch(AppData {
             grid,
             game_over: GameOver::Ongoing,
+            easy_mode: args.easy,
         })
         .expect("launch failed");
 }
