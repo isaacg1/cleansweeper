@@ -1,14 +1,14 @@
-#![feature(result_option_inspect)]
-#![feature(lint_reasons)]
+//#![feature(result_option_inspect)]
+//#![feature(lint_reasons)]
 #![warn(clippy::pedantic)]
 #![allow(
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
-    reason = "Casting used freely, too much clutter otherwise"
+//    reason = "Casting used freely, too much clutter otherwise"
 )]
 #![warn(clippy::nursery)]
-#![allow(clippy::suboptimal_flops, reason = "Less readable")]
+#![allow(clippy::suboptimal_flops)]//, reason = "Less readable")]
 #![warn(
     clippy::panic,
     clippy::shadow_unrelated,
@@ -208,12 +208,26 @@ impl Grid {
             .iter_pos()
             .filter(|&pos| self[pos] == CellState::SecretSafe && self.n_bombs(pos) == 0)
             .collect();
-        // Zero_positions could be empty, but it's super rare, so I'd rather just crash.
-        assert!(!zero_positions.is_empty());
-        let index = rng.gen_range(0..zero_positions.len());
-        let pos = zero_positions[index];
-        let exploded = self.open(pos);
-        assert!(!exploded);
+        // Zero_positions could be empty, so we have a fallback
+        if !zero_positions.is_empty() {
+            let index = rng.gen_range(0..zero_positions.len());
+            let pos = zero_positions[index];
+            let exploded = self.open(pos);
+            assert!(!exploded);
+        } else {
+            let pos = GridPos {
+                row: rng.gen_range(0..self.height),
+                col: rng.gen_range(0..self.width),
+            };
+            self[pos] = CellState::SecretSafe;
+            for neighbor in self.neighbors(pos) {
+                if let Some(n_pos) = neighbor {
+                    self[n_pos] = CellState::SecretSafe;
+                }
+            }
+            let exploded = self.open(pos);
+            assert!(!exploded);
+        }
     }
     // Turn any explosions back into secret
     fn clear_explosions(&mut self) {
